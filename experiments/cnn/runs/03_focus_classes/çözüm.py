@@ -5,32 +5,27 @@ import sys
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from torchvision import datasets, transforms
 
 # -------------------------------------------------
 # Path setup
 # -------------------------------------------------
-CURRENT_FILE = Path(__file__).resolve()
-RUNS_DIR = CURRENT_FILE.parents[1]          # experiments/cnn/runs
-ALL_DATASET_DIR = RUNS_DIR / "03_all_dataset"
-
-sys.path.append(str(ALL_DATASET_DIR))
+CURRENT_DIR = Path(__file__).resolve().parent
+sys.path.append(str(CURRENT_DIR))
 
 from cnn_03_all_model import CNN_03_All_Dataset
 import config
 
-# -------------------------------------------------
-# Config
-# -------------------------------------------------
-FOCUS_EPOCHS = 6
-FOCUS_LR = 1e-4
 
-FOCUS_CLASSES = {
+FOCUS_EPOCHS = 8
+FOCUS_LR = 3e-5
+
+FOCUS_CLASSES = [
     "Corn___Cercospora_leaf_spot Gray_leaf_spot",
     "Tomato___Early_blight",
     "Potato___healthy",
-}
+]
 
 # -------------------------------------------------
 # Reproducibility
@@ -40,31 +35,6 @@ def set_seed(seed: int):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-
-# -------------------------------------------------
-# Targeted Dataset Wrapper
-# -------------------------------------------------
-class TargetedAugDataset(Dataset):
-    def __init__(self, base_dataset, focus_classes, base_transform, focus_transform):
-        self.dataset = base_dataset
-        self.focus_classes = focus_classes
-        self.base_transform = base_transform
-        self.focus_transform = focus_transform
-
-    def __len__(self):
-        return len(self.dataset)
-
-    def __getitem__(self, idx):
-        path, label = self.dataset.samples[idx]
-        image = self.dataset.loader(path)
-        class_name = self.dataset.classes[label]
-
-        if class_name in self.focus_classes:
-            image = self.focus_transform(image)
-        else:
-            image = self.base_transform(image)
-
-        return image, label
 
 # -------------------------------------------------
 # Main
@@ -78,9 +48,17 @@ def main():
     print(f"Using device: {device}")
 
     # -------------------------------------------------
-    # Transforms
+    # Paths
     # -------------------------------------------------
-    base_transform = transforms.Compose([
+    results_dir = Path("experiments/cnn/results/03_focus_classes")
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    model_save_path = results_dir / "cnn_03_focus_classes_model.pth"
+
+    # -------------------------------------------------
+    # Transforms (IDENTICAL to 03 model)
+    # -------------------------------------------------
+    train_transform = transforms.Compose([
         transforms.Resize(config.IMAGE_SIZE),
         transforms.ToTensor(),
         transforms.Normalize(
@@ -89,11 +67,8 @@ def main():
         )
     ])
 
-    focus_transform = transforms.Compose([
+    val_transform = transforms.Compose([
         transforms.Resize(config.IMAGE_SIZE),
-        transforms.RandomResizedCrop(config.IMAGE_SIZE, scale=(0.8, 1.0)),
-        transforms.RandomRotation(15),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2),
         transforms.ToTensor(),
         transforms.Normalize(
             mean=[0.485, 0.456, 0.406],
@@ -104,26 +79,32 @@ def main():
     # -------------------------------------------------
     # Datasets
     # -------------------------------------------------
-    train_base = datasets.ImageFolder(
+    train_dataset = datasets.ImageFolder(
         root=config.DATA_DIR / "train",
-        transform=None
+        transform=train_transform
     )
 
     val_dataset = datasets.ImageFolder(
         root=config.DATA_DIR / "val",
-        transform=base_transform
-    )
-
-    train_dataset = TargetedAugDataset(
-        base_dataset=train_base,
-        focus_classes=FOCUS_CLASSES,
-        base_transform=base_transform,
-        focus_transform=focus_transform
+        transform=val_transform
     )
 
     # -------------------------------------------------
-    # Loaders
+    # Focused sampling
     # -------------------------------------------------
+    class_to_idx = train_dataset.class_to_idx
+    focus_class_indices = [
+        class_to_idx[name] for name in FOCUS_CLASSES
+    ]
+
+    # -------------------------------------------------
+    # Class weights for loss (FIX: keep sampling balanced,
+    # let the loss function penalize focus-class mistakes instead)
+    # -------------------------------------------------
+    class_weights = torch.ones(config.NUM_CLASSES)
+    for idx in focus_class_indices:
+        class_weights[idx] = 3.0
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.BATCH_SIZE,
@@ -145,11 +126,15 @@ def main():
         num_classes=config.NUM_CLASSES
     ).to(device)
 
+    # Load pretrained 03 model
     model.load_state_dict(
         torch.load(config.MODEL_SAVE_PATH, map_location=device)
     )
 
-    
+    # -------------------------------------------------
+    # Freeze all layers except the classifier head,
+   
+    # -------------------------------------------------
     for name, param in model.named_parameters():
         if "classifier" not in name:
             param.requires_grad = False
@@ -157,7 +142,7 @@ def main():
     # -------------------------------------------------
     # Loss & Optimizer
     # -------------------------------------------------
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(weight=class_weights.to(device))
 
     optimizer = torch.optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()),
@@ -169,7 +154,9 @@ def main():
     # -------------------------------------------------
     for epoch in range(FOCUS_EPOCHS):
         model.train()
-        correct, total = 0, 0
+        train_loss = 0.0
+        correct = 0
+        total = 0
 
         for images, labels in train_loader:
             images, labels = images.to(device), labels.to(device)
@@ -180,42 +167,48 @@ def main():
             loss.backward()
             optimizer.step()
 
+            train_loss += loss.item()
             _, preds = torch.max(outputs, 1)
             correct += (preds == labels).sum().item()
             total += labels.size(0)
 
         train_acc = correct / total
+        train_loss_avg = train_loss / len(train_loader)
 
+        # -----------------------------
         # Validation
+        # -----------------------------
         model.eval()
-        val_correct, val_total = 0, 0
+        val_loss = 0.0
+        val_correct = 0
+        val_total = 0
+
         with torch.no_grad():
             for images, labels in val_loader:
                 images, labels = images.to(device), labels.to(device)
+
                 outputs = model(images)
+                loss = criterion(outputs, labels)
+
+                val_loss += loss.item()
                 _, preds = torch.max(outputs, 1)
                 val_correct += (preds == labels).sum().item()
                 val_total += labels.size(0)
 
         val_acc = val_correct / val_total
+        val_loss_avg = val_loss / len(val_loader)
 
         print(
-            f"[Targeted Aug] Epoch [{epoch+1}/{FOCUS_EPOCHS}] "
-            f"Train Acc: {train_acc:.4f} | Val Acc: {val_acc:.4f}"
+            f"[Focus Train] Epoch [{epoch+1}/{FOCUS_EPOCHS}] "
+            f"Train Loss: {train_loss_avg:.4f} | Train Acc: {train_acc:.4f} | "
+            f"Val Loss: {val_loss_avg:.4f} | Val Acc: {val_acc:.4f}"
         )
 
     # -------------------------------------------------
-    # Save
+    # Save model
     # -------------------------------------------------
-    save_path = Path("experiments/cnn/results/03_targeted_aug")
-    save_path.mkdir(parents=True, exist_ok=True)
-
-    torch.save(
-        model.state_dict(),
-        save_path / "cnn_03_targeted_aug_model.pth"
-    )
-
-    print("Targeted augmentation model saved.")
+    torch.save(model.state_dict(), model_save_path)
+    print(f"Focused model saved to {model_save_path}")
 
 # -------------------------------------------------
 if __name__ == "__main__":

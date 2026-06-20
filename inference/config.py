@@ -20,7 +20,7 @@ SINGLE_PLANTS = {"blueberry", "orange", "raspberry", "soybean", "squash"}
 SINGLE_THRESHOLD_KEY = "threshold_p99"  # conservative
 
 
-DEFAULT_DEVICE = None  # None => auto: mps if available else cpu
+DEFAULT_DEVICE = None  #  mps if available else cpu
 
 
 

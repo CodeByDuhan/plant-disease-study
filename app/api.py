@@ -2,6 +2,9 @@ from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 import tempfile
 import os
+import sys
+# api.py'ın bulunduğu klasörün bir üst klasörünü (kök dizini) sys.path'e ekler
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from inference.backends.model1_model2 import Model1Model2Backend
 from inference.backends.global_cnn import GlobalCNNBackend
@@ -20,7 +23,7 @@ BACKENDS = {
     "transfer_learning": TransferLearning08Backend(device="cpu"),
 }
 
-DEFAULT_BACKEND = "model1_model2"
+DEFAULT_BACKEND = "cnn_svm"
 
 
 # -----------------------------
@@ -97,4 +100,4 @@ def predict():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(host="0.0.0.0", port=5001, debug=False)

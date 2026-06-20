@@ -1,6 +1,7 @@
 import argparse
 import json
 from pathlib import Path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from inference.backends.model1_model2 import Model1Model2Backend
 from inference.backends.global_cnn import GlobalCNNBackend

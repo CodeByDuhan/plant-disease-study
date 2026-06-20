@@ -39,7 +39,7 @@ def main():
     set_seed(config.RANDOM_SEED)
 
     device = torch.device(
-    "mps" if torch.backends.mps.is_available() else "cpu")# mackbook m4 air da gpu derin öğrenim ve tensor hesaplaması için daha iyiymiş.
+    "mps" if torch.backends.mps.is_available() else "cpu")#  m3 air da gpu derin öğrenim ve tensor hesaplaması için daha iyi.
 
     print(f"Using device: {device}")
 

@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 
-API_URL_DEFAULT = "http://127.0.0.1:5000/predict"
+API_URL_DEFAULT = "http://127.0.0.1:5001/predict"
 
 st.set_page_config(page_title="Plant Disease Demo", layout="centered")
 st.title("Plant Disease Classification Demo")
@@ -28,16 +28,20 @@ uploaded = st.file_uploader(
 
 
 def render_result(out: dict):
-
-    st.subheader("Prediction")
+    st.subheader(" Analiz Sonuçları")
 
     # -------------------------------------------------
     # Case 1: model1_model2 style output
     # -------------------------------------------------
     if "plant" in out or "disease" in out or "ood" in out:
-        st.write(f"**Plant:** {out.get('plant')}")
-        st.write(f"**Disease:** {out.get('disease')}")
-        st.write(f"**OOD:** {out.get('ood')}")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric(label="Bitki Türü", value=out.get('plant', 'Bilinmiyor'))
+        with col2:
+            st.metric(label="Hastalık Durumu", value=out.get('disease', 'Bilinmiyor'))
+        
+        if out.get('ood') == "True" or out.get('ood') is True:
+            st.error(" Dikkat: Bu görsel eğitim veri setinin dışından (OOD) olabilir!")
         return
 
     # -------------------------------------------------
@@ -46,15 +50,39 @@ def render_result(out: dict):
     top1 = out.get("top1")
     preds = out.get("preds")
 
+    # tahmin
     if isinstance(top1, dict):
-        st.write(f"**Top-1:** {top1.get('class_name')}")
-        st.write(f"**Probability:** {top1.get('prob'):.4f}")
+        class_name = top1.get('class_name', 'Bilinmiyor')
+        prob = top1.get('prob', 0.0)
     elif isinstance(preds, list) and len(preds) > 0:
-        st.write(f"**Top-1:** {preds[0].get('class_name')}")
-        st.write(f"**Probability:** {preds[0].get('prob'):.4f}")
+        class_name = preds[0].get('class_name', 'Bilinmiyor')
+        prob = preds[0].get('prob', 0.0)
     else:
-        st.warning("Unknown output format. See raw JSON below.")
+        st.warning("Bilinmeyen çıktı formatı. Ham JSON verisini inceleyin.")
+        return
 
+    #  tahmin
+    st.success(f"**En Yüksek Tahmin:** {class_name}")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric(label="Tahmin Edilen Sınıf", value=class_name.split("___")[-1].replace("_", " "))
+    with col2:
+        st.metric(label="Güven Oranı (Olasılık)", value=f"%{prob*100:.2f}")
+
+    #  Grafik 
+    if isinstance(preds, list) and len(preds) > 0:
+        st.write("---")
+        st.subheader(" Model Olasılık Dağılımı")
+        
+        # Grafik verileri
+        chart_data = {
+            "Sınıflar": [p.get("class_name").split("___")[-1].replace("_", " ") for p in preds],
+            "Olasılık (%)": [p.get("prob", 0.0) * 100 for p in preds]
+        }
+        
+        #  bar chart
+        st.bar_chart(data=chart_data, x="Sınıflar", y="Olasılık (%)", color="#1f77b4")
 
 if uploaded is not None:
 
